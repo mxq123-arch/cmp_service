@@ -110,6 +110,25 @@ function formatNumber(val: number | string): string {
 }
 
 /**
+ * 格式化超长数字：使用省略号截断，返回显示文本和完整值
+ */
+function formatLargeNumber(val: number | string, maxDigits: number = 10): { display: string; full: string } {
+  const num = typeof val === 'string' ? parseFloat(val) : val
+  if (isNaN(num)) return { display: String(val), full: String(val) }
+
+  const fullStr = formatNumber(num)
+
+  // 如果数字长度在允许范围内，返回原始格式
+  if (fullStr.length <= maxDigits) {
+    return { display: fullStr, full: fullStr }
+  }
+
+  // 数字太长，使用省略号截断（保留前 maxDigits-3 位 + '...'）
+  const truncated = fullStr.slice(0, maxDigits - 3) + '...'
+  return { display: truncated, full: fullStr }
+}
+
+/**
  * 格式化值：如果是毫秒时间戳则转换为日期字符串，否则返回原值。
  */
 function formatValue(val: unknown): string {
@@ -285,6 +304,8 @@ export default memo(function ChartPanel({ type, title, data, targets, menuOpen, 
   const buildGaugeChartOption = (
     targetRows: MetricRow[],
     ti: number,
+    containerWidth?: number,
+    containerHeight?: number,
   ): echarts.EChartsOption => {
     const { nameCol: tNameCol, valueCols: tValCols } = detectColumns(targetRows, type)
     const primaryValues = tValCols.length > 0 ? targetRows.map((m) => parseFloat(m[tValCols[0]]) || 0) : []
@@ -302,11 +323,46 @@ export default memo(function ChartPanel({ type, title, data, targets, menuOpen, 
     let displayValue = gaugeValue
     if (gValueMode === 'percentage') displayValue = gMax !== gMin ? ((gaugeValue - gMin) / (gMax - gMin)) * 100 : 0
 
+    // 计算实际显示的字符串（智能格式化大数字）
+    const formattedValue = gValueMode === 'percentage'
+      ? { display: `${displayValue.toFixed(1)}%`, full: `${displayValue.toFixed(1)}%` }
+      : formatLargeNumber(displayValue, 10)
+
+    const displayStr = formattedValue.display + (gUnit && gValueMode !== 'percentage' ? ` ${gUnit}` : '')
+    const fullDisplayStr = formattedValue.full + (gUnit && gValueMode !== 'percentage' ? ` ${gUnit}` : '')
+
+    // 根据容器尺寸和字符串长度智能调整字体大小
+    const minDim = Math.min(containerWidth || 200, containerHeight || 200)
+    const gaugeRadius = minDim * 0.75 // 仪表盘半径（像素）
+    const maxTextWidth = gaugeRadius * 1.6 // 最大文本宽度（稍大于直径）
+
+    // 估算字符宽度（粗略估计：数字和单位字符平均宽度约为字体大小的0.6倍）
+    const charCount = displayStr.length
+    const maxFontSize = Math.max(16, Math.min(36, minDim * 0.15))
+    const estimatedFontSize = Math.min(maxFontSize, maxTextWidth / (charCount * 0.6))
+    const fontSize = Math.max(12, estimatedFontSize) // 最小字体12px
+
+    const titleFontSize = Math.max(11, Math.min(16, minDim * 0.065)) // 标题字体，范围11-16
+
     return {
       backgroundColor: 'transparent',
+      tooltip: {
+        show: true,
+        trigger: 'item',
+        formatter: () => fullDisplayStr,
+        backgroundColor: 'rgba(50, 50, 50, 0.9)',
+        borderColor: '#333',
+        borderWidth: 1,
+        padding: [8, 12],
+        textStyle: {
+          color: '#fff',
+          fontSize: 13,
+          fontFamily: 'Inter, -apple-system, sans-serif',
+        },
+      },
       series: [{
         type: 'gauge',
-        startAngle: 225, endAngle: -45, center: ['50%', '50%'], radius: '88%',
+        startAngle: 225, endAngle: -45, center: ['50%', '45%'], radius: '75%',
         min: gValueMode === 'percentage' ? 0 : gMin,
         max: gValueMode === 'percentage' ? 100 : gMax,
         progress: { show: true, width: 36, roundCap: true, itemStyle: { color: gColor } },
@@ -314,11 +370,11 @@ export default memo(function ChartPanel({ type, title, data, targets, menuOpen, 
         axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
         anchor: { show: false }, pointer: { show: false },
         detail: {
-          valueAnimation: true, fontSize: 30, offsetCenter: [0, '0%'],
-          formatter: (val: number) => gValueMode === 'percentage' ? `${val.toFixed(1)}%` : `${formatNumber(val)}${gUnit ? ' ' + gUnit : ''}`,
+          valueAnimation: true, fontSize, offsetCenter: [0, '-5%'],
+          formatter: () => displayStr,
           color: gColor, fontWeight: 600, fontFamily: 'Inter, -apple-system, sans-serif',
         },
-        title: { color: '#666', fontSize: 13, offsetCenter: [0, '40%'], fontFamily: 'Inter, -apple-system, sans-serif' },
+        title: { color: '#666', fontSize: titleFontSize, offsetCenter: [0, '100%'], fontFamily: 'Inter, -apple-system, sans-serif' },
         data: [{ value: displayValue, name: gaugeName || undefined }],
       }],
     }
@@ -551,9 +607,9 @@ export default memo(function ChartPanel({ type, title, data, targets, menuOpen, 
                 ? { data: legendData, bottom: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 10, itemGap: 16, textStyle: { color: '#86909c', fontSize: 11 } }
                 : undefined,
               grid: {
-                left: '3%', right: '5%',
+                left: '5%', right: '5%',
                 bottom: legendData.length > 1 ? '14%' : (labelRotate > 30 ? '16%' : labelRotate > 0 ? '12%' : '8%'),
-                top: '8%',
+                top: 50,
                 containLabel: true,
               },
               xAxis: isHorizontal
@@ -572,7 +628,21 @@ export default memo(function ChartPanel({ type, title, data, targets, menuOpen, 
                   ]
                 : isHorizontal
                 ? { type: 'category', data: names, axisLabel: { fontSize: 10, color: '#86909c' }, axisLine: { lineStyle: { color: '#e5e6eb' } }, axisTick: { show: false } }
-                : { type: 'value', name: valueCols[0] || '', nameTextStyle: { color: '#86909c', fontSize: 11 }, axisLabel: { color: '#86909c', fontSize: 10 }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: '#f2f3f5', type: 'dashed' } } },
+                : {
+                    type: 'value',
+                    name: valueCols[0] || '',
+                    nameTextStyle: { color: '#86909c', fontSize: 11 },
+                    nameGap: 20,
+                    axisLabel: {
+                      color: '#86909c',
+                      fontSize: 10,
+                      margin: 15,
+                      show: true,
+                    },
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    splitLine: { lineStyle: { color: '#f2f3f5', type: 'dashed' } }
+                  },
               series,
             }
             break
@@ -636,11 +706,48 @@ export default memo(function ChartPanel({ type, title, data, targets, menuOpen, 
             let displayValue = gaugeValue
             if (gValueMode === 'percentage') displayValue = gMax !== gMin ? ((gaugeValue - gMin) / (gMax - gMin)) * 100 : 0
 
+            // 计算实际显示的字符串（智能格式化大数字）
+            const formattedValue = gValueMode === 'percentage'
+              ? { display: `${displayValue.toFixed(1)}%`, full: `${displayValue.toFixed(1)}%` }
+              : formatLargeNumber(displayValue, 10)
+
+            const displayStr = formattedValue.display + (gUnit && gValueMode !== 'percentage' ? ` ${gUnit}` : '')
+            const fullDisplayStr = formattedValue.full + (gUnit && gValueMode !== 'percentage' ? ` ${gUnit}` : '')
+
+            // 根据容器尺寸和字符串长度智能调整字体大小
+            const containerWidth = el?.offsetWidth || 200
+            const containerHeight = el?.offsetHeight || 200
+            const minDim = Math.min(containerWidth, containerHeight)
+            const gaugeRadius = minDim * 0.75 // 仪表盘半径（像素）
+            const maxTextWidth = gaugeRadius * 1.6 // 最大文本宽度（稍大于直径）
+
+            // 估算字符宽度（粗略估计：数字和单位字符平均宽度约为字体大小的0.6倍）
+            const charCount = displayStr.length
+            const maxFontSize = Math.max(16, Math.min(36, minDim * 0.15))
+            const estimatedFontSize = Math.min(maxFontSize, maxTextWidth / (charCount * 0.6))
+            const fontSize = Math.max(12, estimatedFontSize) // 最小字体12px
+
+            const titleFontSize = Math.max(11, Math.min(16, minDim * 0.065))
+
             option = {
               backgroundColor: 'transparent',
+              tooltip: {
+                show: true,
+                trigger: 'item',
+                formatter: () => fullDisplayStr,
+                backgroundColor: 'rgba(50, 50, 50, 0.9)',
+                borderColor: '#333',
+                borderWidth: 1,
+                padding: [8, 12],
+                textStyle: {
+                  color: '#fff',
+                  fontSize: 13,
+                  fontFamily: 'Inter, -apple-system, sans-serif',
+                },
+              },
               series: [{
                 type: 'gauge',
-                startAngle: 225, endAngle: -45, center: ['50%', '50%'], radius: '88%',
+                startAngle: 225, endAngle: -45, center: ['50%', '45%'], radius: '75%',
                 min: gValueMode === 'percentage' ? 0 : gMin,
                 max: gValueMode === 'percentage' ? 100 : gMax,
                 progress: { show: true, width: 36, roundCap: true, itemStyle: { color: gColor } },
@@ -648,11 +755,11 @@ export default memo(function ChartPanel({ type, title, data, targets, menuOpen, 
                 axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
                 anchor: { show: false }, pointer: { show: false },
                 detail: {
-                  valueAnimation: true, fontSize: 30, offsetCenter: [0, '0%'],
-                  formatter: (val: number) => gValueMode === 'percentage' ? `${val.toFixed(1)}%` : `${formatNumber(val)}${gUnit ? ' ' + gUnit : ''}`,
+                  valueAnimation: true, fontSize, offsetCenter: [0, '-5%'],
+                  formatter: () => displayStr,
                   color: gColor, fontWeight: 600, fontFamily: 'Inter, -apple-system, sans-serif',
                 },
-                title: { color: '#666', fontSize: 13, offsetCenter: [0, '40%'], fontFamily: 'Inter, -apple-system, sans-serif' },
+                title: { color: '#666', fontSize: titleFontSize, offsetCenter: [0, '100%'], fontFamily: 'Inter, -apple-system, sans-serif' },
                 data: [{ value: displayValue, name: gaugeName || undefined }],
               }],
             }
@@ -737,7 +844,7 @@ export default memo(function ChartPanel({ type, title, data, targets, menuOpen, 
           effectiveRows = [{ [exprName]: computedVal }]
         }
 
-        const option = buildGaugeChartOption(effectiveRows, ti)
+        const option = buildGaugeChartOption(effectiveRows, ti, container.offsetWidth, container.offsetHeight)
         targetChart.setOption(option)
 
         const handleResize = () => { try { targetChart.resize() } catch {} }
@@ -1274,7 +1381,7 @@ export default memo(function ChartPanel({ type, title, data, targets, menuOpen, 
               <div key={ti} style={{ flex: 1, minHeight: 160, display: 'flex', flexDirection: 'column' }}>
                 <div
                   ref={(el) => { if (el) chartContainersRef.current.set(ti, el); else chartContainersRef.current.delete(ti) }}
-                  style={{ width: '100%', flex: 1, minHeight: 160 }}
+                  style={{ width: '100%', flex: 1, minHeight: 160}}
                 />
               </div>
             )

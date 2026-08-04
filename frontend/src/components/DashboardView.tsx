@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { useSearchParams, useNavigate, useParams, Link } from 'react-router-dom'
+import { useSearchParams, useNavigate, useParams, useBlocker, Link } from 'react-router-dom'
 import { Modal, message, Breadcrumb } from 'antd'
 import { HomeOutlined, FolderOutlined, DashboardOutlined } from '@ant-design/icons'
 import html2canvas from 'html2canvas'
@@ -13,6 +13,60 @@ import ReportModal from './ReportModal'
 import SnapshotScheduleModal from './SnapshotScheduleModal'
 import * as api from '../api'
 import type { DashboardRes, DashboardDataRes, DashboardJSON, MetricRow, PanelDef, PanelDataRes, DatasourceRes, VariableRes } from '../api'
+
+// BeforeUnloadEvent 类型定义
+type BeforeEvent = BeforeUnloadEvent & {
+  returnValue: string
+}
+
+// 自定义导航确认对话框
+function NavigationPrompt({ when, onConfirm, onCancel }: { when: boolean; onConfirm: () => void; onCancel: () => void }) {
+  useEffect(() => {
+    if (when) {
+      const handleBeforeUnload = (e: BeforeEvent) => {
+        e.preventDefault()
+        e.returnValue = '仪表板有未保存的变更，确定要离开吗？'
+        return e.returnValue
+      }
+      window.addEventListener('beforeunload', handleBeforeUnload)
+      return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload)
+      }
+    }
+  }, [when])
+
+  useEffect(() => {
+    if (when) {
+      const handlePopState = (e: PopStateEvent) => {
+        e.preventDefault()
+        Modal.confirm({
+          title: '未保存的变更',
+          content: '仪表板有未保存的变更，确定要离开吗？离开后变更将丢失。',
+          okText: '离开',
+          okType: 'danger',
+          cancelText: '取消',
+          onOk: () => {
+            window.removeEventListener('popstate', handlePopState)
+            onConfirm()
+          },
+          onCancel: () => {
+            onCancel()
+          },
+        })
+        // 阻止默认的返回行为
+        window.history.pushState(null, '', window.location.href)
+      }
+      window.addEventListener('popstate', handlePopState)
+      // 添加一个历史记录项，这样用户点击返回时会触发 popstate 事件
+      window.history.pushState(null, '', window.location.href)
+      return () => {
+        window.removeEventListener('popstate', handlePopState)
+      }
+    }
+  }, [when, onConfirm, onCancel])
+
+  return null
+}
 
 interface DashboardViewProps {
   dashboardId: string
@@ -88,6 +142,7 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
   const [dashboard, setDashboard] = useState<DashboardRes | null>(null)
   const [dataRes, setDataRes] = useState<DashboardDataRes | null>(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false) // 刷新按钮的加载状态
   const [error, setError] = useState<string | null>(null)
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const [showJson, setShowJson] = useState(false)
@@ -126,7 +181,7 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
   const [snapshots, setSnapshots] = useState<api.SnapshotRes[]>([])
   const [snapLoading, setSnapLoading] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
-  const shareLink = `${window.location.origin}/snapshot/`
+  const shareLink = `${window.location.origin}/capacity_mgt_platform/snapshot/`
 
   const loadSnapshots = async () => {
     setSnapLoading(true)
@@ -375,6 +430,43 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
     }
   }, [moreMenuOpen])
 
+  // 返回按钮：检查未保存变更
+  const handleBack = () => {
+    if (hasUnsaved) {
+      Modal.confirm({
+        title: '未保存的变更',
+        content: '仪表板有未保存的变更，确定要离开吗？离开后变更将丢失。',
+        okText: '离开',
+        okType: 'danger',
+        cancelText: '取消',
+        onOk: () => {
+          onBack()
+        },
+      })
+    } else {
+      onBack()
+    }
+  }
+
+  // 面包屑导航：检查未保存变更
+  const handleBreadcrumbClick = (e: React.MouseEvent, path: string) => {
+    e.preventDefault()
+    if (hasUnsaved) {
+      Modal.confirm({
+        title: '未保存的变更',
+        content: '仪表板有未保存的变更，确定要离开吗？离开后变更将丢失。',
+        okText: '离开',
+        okType: 'danger',
+        cancelText: '取消',
+        onOk: () => {
+          navigate(path)
+        },
+      })
+    } else {
+      navigate(path)
+    }
+  }
+
   /** 更新 URL 参数（时间范围和变量） */
   const updateUrlParams = useCallback((newPreset?: TimePreset, newFrom?: string, _newTo?: string, newVars?: Record<string, string>) => {
     const params = new URLSearchParams()
@@ -593,9 +685,7 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
       // 合并系统内置变量（$__from, $__to 等）
       if (tr) Object.assign(varMap, api.getSystemVars(tr.from, tr.to))
 
-      const dbData = await api.getDashboardData(dashboardId, tr?.from, tr?.to, undefined, varMap)
       setDashboard(db)
-      setDataRes(dbData)
       setDatasources(dsList)
       setVariables(varList)
       // 重置手动选择跟踪（仪表板重新加载时）
@@ -603,6 +693,7 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
       // 初始化本地草稿为当前 dashboard_json 的深拷贝
       const dj = JSON.parse(JSON.stringify(db.dashboard_json || {}))
       setDraftJson(dj)
+      setSavedJson(dj)
 
       // 更新 URL slug（如果当前 URL 没有 slug 或 slug 不匹配）
       const title = db.title || '仪表板'
@@ -610,7 +701,30 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
       if (!slug || slug !== expectedSlug) {
         navigate(`/capacity_mgt_platform/d/${dashboardId}/${expectedSlug}${window.location.search}`, { replace: true })
       }
-      setSavedJson(dj)
+
+      // 并行获取每个面板的数据
+      const panels = (dj.panels || []) as any[]
+      if (panels.length > 0) {
+        const panelDataPromises = panels.map(async (panel) => {
+          try {
+            const panelData = await api.getPanelData(dashboardId, panel.id, tr?.from, tr?.to, varMap)
+            return panelData
+          } catch (err) {
+            console.error(`Failed to load panel ${panel.id}:`, err)
+            return null
+          }
+        })
+
+        const panelDataResults = await Promise.all(panelDataPromises)
+
+        // 合并所有面板数据
+        const dbData: api.DashboardDataRes = {
+          dashboard_id: dashboardId,
+          dashboard_json: dj,
+          panels_data: panelDataResults.filter((data): data is api.PanelDataRes => data !== null)
+        }
+        setDataRes(dbData)
+      }
     } catch (e: any) {
       setError(e.message || '加载失败')
     } finally {
@@ -618,14 +732,56 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
     }
   }
 
-  // 刷新数据：保留草稿，只重新查询数据
+  // 刷新数据：保留草稿，只重新查询数据（不触发全局 loading，避免页面闪烁）
   const handleRefresh = async () => {
-    // 如果有未保存的草稿，使用草稿重新加载数据
-    if (draftJson && savedJson && JSON.stringify(draftJson) !== JSON.stringify(savedJson)) {
-      await reloadDataWithDraft(draftJson)
-    } else {
-      // 没有草稿或草稿已保存，重新加载仪表板
-      await loadData()
+    setRefreshing(true)
+    try {
+      const tr = getTimeRange()
+      // 构建变量值映射（用户变量 + 系统变量）
+      const varMap: Record<string, string | string[]> = {}
+      variables.forEach((v) => {
+        if (v.current && (v.current as any).value) {
+          varMap[v.name] = (v.current as any).value
+        } else if (v.default) {
+          varMap[v.name] = v.default
+        }
+      })
+      if (tr) Object.assign(varMap, api.getSystemVars(tr.from, tr.to))
+
+      // 使用草稿或已保存的 JSON 重新查询面板数据
+      const currentJson = (draftJson && savedJson && JSON.stringify(draftJson) !== JSON.stringify(savedJson))
+        ? draftJson
+        : savedJson || draftJson
+
+      if (currentJson) {
+        const panels = (currentJson.panels || []) as any[]
+        if (panels.length > 0) {
+          const panelDataPromises = panels.map(async (panel) => {
+            try {
+              const panelData = await api.getPanelData(dashboardId, panel.id, tr?.from, tr?.to, varMap)
+              return panelData
+            } catch (err) {
+              console.error(`Failed to load panel ${panel.id}:`, err)
+              return null
+            }
+          })
+
+          const panelDataResults = await Promise.all(panelDataPromises)
+
+          // 更新面板数据（不触发全局 loading，避免页面闪烁）
+          const dbData: api.DashboardDataRes = {
+            dashboard_id: dashboardId,
+            dashboard_json: currentJson,
+            panels_data: panelDataResults.filter((data): data is api.PanelDataRes => data !== null)
+          }
+          setDataRes(dbData)
+        }
+      }
+    } catch (e: any) {
+      console.error('刷新数据失败:', e)
+      message.error('刷新失败: ' + (e.message || '未知错误'))
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -644,8 +800,30 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
         }
       })
       if (tr) Object.assign(varMap, api.getSystemVars(tr.from, tr.to))
-      const dbData = await api.getDashboardData(dashboardId, tr?.from, tr?.to, draft as DashboardJSON, varMap)
-      setDataRes(dbData)
+
+      // 并行获取每个面板的数据
+      const panels = (draft.panels || []) as any[]
+      if (panels.length > 0) {
+        const panelDataPromises = panels.map(async (panel) => {
+          try {
+            const panelData = await api.getPanelData(dashboardId, panel.id, tr?.from, tr?.to, varMap)
+            return panelData
+          } catch (err) {
+            console.error(`Failed to load panel ${panel.id}:`, err)
+            return null
+          }
+        })
+
+        const panelDataResults = await Promise.all(panelDataPromises)
+
+        // 合并所有面板数据
+        const dbData: api.DashboardDataRes = {
+          dashboard_id: dashboardId,
+          dashboard_json: draft,
+          panels_data: panelDataResults.filter((data): data is api.PanelDataRes => data !== null)
+        }
+        setDataRes(dbData)
+      }
     } catch (e: any) {
       console.error('reloadDataWithDraft failed:', e)
       // 静默失败，不影响草稿编辑
@@ -752,20 +930,6 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
       if (title !== dashboard.title) {
         setDashboard({ ...dashboard, title, dashboard_json: saved })
       }
-      // 不重新加载变量，保留用户当前选择的变量值
-      // 只重新加载仪表板数据（使用当前变量和时间范围）
-      const tr = getTimeRange()
-      const varMap: Record<string, string | string[]> = {}
-      variables.forEach((v) => {
-        if (v.current && (v.current as any).value) {
-          varMap[v.name] = (v.current as any).value
-        } else if (v.default) {
-          varMap[v.name] = v.default
-        }
-      })
-      if (tr) Object.assign(varMap, api.getSystemVars(tr.from, tr.to))
-      const dbData = await api.getDashboardData(dashboardId, tr?.from, tr?.to, undefined, varMap)
-      setDataRes(dbData)
       // 保存成功提示
       message.success('仪表板保存成功')
     } catch (e: any) {
@@ -935,11 +1099,22 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
     }, 200)
   }
 
+  // 导航确认：拦截所有离开当前页面的操作
+  const confirmNavigationRef = useRef(false)
+  const handleConfirmNavigation = useCallback(() => {
+    confirmNavigationRef.current = true
+    // 返回到上一页
+    window.history.back()
+  }, [])
+  const handleCancelNavigation = useCallback(() => {
+    // 用户取消，不做任何操作
+  }, [])
+
   if (loading) {
     return (
       <div className="dashboard-view">
         <div className="dashboard-toolbar">
-          <div className="toolbar-left"><button className="btn-sm" onClick={onBack}>&lt; 返回</button></div>
+          <div className="toolbar-left"><button className="btn-sm" onClick={handleBack}>&lt; 返回</button></div>
         </div>
         <div className="empty-state">加载中...</div>
       </div>
@@ -950,7 +1125,7 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
     return (
       <div className="dashboard-view">
         <div className="dashboard-toolbar">
-          <div className="toolbar-left"><button className="btn-sm" onClick={onBack}>&lt; 返回</button></div>
+          <div className="toolbar-left"><button className="btn-sm" onClick={handleBack}>&lt; 返回</button></div>
         </div>
         <div className="empty-state" style={{ color: 'var(--red)' }}>{error || '仪表板不存在'}</div>
       </div>
@@ -958,22 +1133,31 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
   }
 
   return (
-    <div className="dashboard-view">
+    <>
+      {/* 导航确认组件：拦截所有离开当前页面的操作 */}
+      <NavigationPrompt
+        when={hasUnsaved}
+        onConfirm={handleConfirmNavigation}
+        onCancel={handleCancelNavigation}
+      />
+      <div className="dashboard-view">
       {/* 面包屑导航 */}
       <div style={{ padding: '12px 24px', background: '#fff', borderBottom: '1px solid #f0f0f0' }}>
         <Breadcrumb>
           <Breadcrumb.Item>
-            <Link to="/capacity_mgt_platform/">
+            <Link
+              to="/capacity_mgt_platform/"
+              onClick={(e) => handleBreadcrumbClick(e, '/capacity_mgt_platform/')}
+            >
               <HomeOutlined /> 仪表板
             </Link>
           </Breadcrumb.Item>
           {dashboard?.folder_name && (
             <Breadcrumb.Item>
-              <Link to="/" onClick={(e) => {
-                e.preventDefault()
-                // TODO: 跳转到该文件夹
-                navigate('/capacity_mgt_platform/')
-              }}>
+              <Link
+                to="/capacity_mgt_platform/"
+                onClick={(e) => handleBreadcrumbClick(e, '/capacity_mgt_platform/')}
+              >
                 <FolderOutlined /> {dashboard.folder_name}
               </Link>
             </Breadcrumb.Item>
@@ -986,7 +1170,7 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
       {/* ---- Toolbar ---- */}
       <div className="dashboard-toolbar">
         <div className="toolbar-left">
-          <button className="btn-sm" onClick={onBack}>&lt; 返回</button>
+          <button className="btn-sm" onClick={handleBack}>&lt; 返回</button>
           <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-primary)' }}>{displayTitle}</span>
           <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: '1px' }}>{panels.length} 个面板</span>
           {hasUnsaved && (
@@ -1170,13 +1354,30 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
             </svg>
             添加面板
           </button>
-          <button className="btn-sm" onClick={handleRefresh} title="刷新数据">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <button
+            className="btn-sm"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="刷新数据"
+          >
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{
+                animation: refreshing ? 'spin 1s linear infinite' : 'none',
+              }}
+            >
               <polyline points="23 4 23 10 17 10" />
               <polyline points="1 20 1 14 7 14" />
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
             </svg>
-            刷新
+            {refreshing ? '刷新中...' : '刷新'}
           </button>
 
           {/* 更多操作下拉菜单 */}
@@ -1627,5 +1828,6 @@ export default function DashboardView({ dashboardId, onBack, onEditPanel }: Dash
           </div>
       </div>
     </div>
+    </>
   )
 }

@@ -1819,7 +1819,7 @@ body {
 .pe-query-panel-content {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 0;
+  padding: 1px 0;
 }
 
 /* ── Sidebar ── */

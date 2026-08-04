@@ -7,3 +7,9 @@ body {
   background: #111217;
   color: #d8d9da;
 }
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

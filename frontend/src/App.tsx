@@ -7,7 +7,7 @@ import SnapshotView from './components/SnapshotView'
 import SnapshotList from './components/SnapshotList'
 import PanelEditPage from './components/PanelEditPage'
 
-import type { PanelDef, DatasourceRes, PanelDataRes } from './api'
+import type { PanelDef, DatasourceRes, PanelDataRes, VariableRes } from './api'
 import { initTheme } from './themes'
 import './App.css'
 import logo from './assets/logo.png'
@@ -20,6 +20,10 @@ interface EditingPanelCtx {
   datasources: DatasourceRes[]
   draftJson: any
   panelsData?: PanelDataRes[]
+  variables?: VariableRes[]
+  timePreset?: string
+  customFrom?: string
+  customTo?: string
   onSave: (updated: PanelDef) => void
 }
 
@@ -53,6 +57,10 @@ function DashboardPageWrapper() {
           dashboardId={editingPanel.dashboardId}
           draftJson={editingPanel.draftJson}
           panelsData={editingPanel.panelsData}
+          variables={editingPanel.variables}
+          timePreset={editingPanel.timePreset}
+          customFrom={editingPanel.customFrom}
+          customTo={editingPanel.customTo}
           onSave={(updated) => {
             editingPanel.onSave(updated)
             setEditingPanel(null)

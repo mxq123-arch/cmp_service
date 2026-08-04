@@ -68,13 +68,16 @@ export default function PanelEditPage({ panel, datasources, dashboardId, draftJs
   const [manuallyTouchedVarIds, setManuallyTouchedVarIds] = useState<Set<string>>(new Set())
   const [showVariablesModal, setShowVariablesModal] = useState(false)
 
+  // 查询卡片的折叠状态
+  const [collapsedQueries, setCollapsedQueries] = useState<Set<number>>(new Set())
+
   // 左侧上下区域高度比例（上部占比，范围0.3-0.7）
-  const [leftSplitRatio, setLeftSplitRatio] = useState(0.55)
+  const [leftSplitRatio, setLeftSplitRatio] = useState(0.50)
   const [isDragging, setIsDragging] = useState(false)
   const leftPanelRef = useRef<HTMLDivElement>(null)
 
   // 左右区域宽度比例（左侧占比，范围0.4-0.75）
-  const [leftRightRatio, setLeftRightRatio] = useState(0.6)
+  const [leftRightRatio, setLeftRightRatio] = useState(0.72)
   const [isVerticalDragging, setIsVerticalDragging] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
 
@@ -416,7 +419,7 @@ export default function PanelEditPage({ panel, datasources, dashboardId, draftJs
     })
   }
 
-  const shareLink = `${window.location.origin}/snapshot/`
+  const shareLink = `${window.location.origin}/capacity_mgt_platform/snapshot/`
 
   // ---- 刷新预览数据 ----
   const handleRefreshPreview = async () => {
@@ -922,9 +925,43 @@ export default function PanelEditPage({ panel, datasources, dashboardId, draftJs
               <div style={{ padding: '8px 16px 16px' }}>
                 {p.targets.map((target, ti) => {
                   const isExpr = target.targetType === 'expression'
+                  const isCollapsed = collapsedQueries.has(ti)
+                  const toggleCollapse = () => {
+                    setCollapsedQueries(prev => {
+                      const next = new Set(prev)
+                      if (next.has(ti)) {
+                        next.delete(ti)
+                      } else {
+                        next.add(ti)
+                      }
+                      return next
+                    })
+                  }
                   return (
                   <div key={ti} className="pe-query-block">
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', background: 'var(--bg-raised)' }}>
+                      {/* 折叠按钮 */}
+                      <button
+                        onClick={toggleCollapse}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          padding: '2px 4px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          transition: 'transform 0.15s'
+                        }}
+                        title={isCollapsed ? '展开' : '折叠'}
+                      >
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor" style={{
+                          transform: isCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+                          transition: 'transform 0.15s',
+                          color: 'var(--text-muted)'
+                        }}>
+                          <path d="M3 1L8 5L3 9z" />
+                        </svg>
+                      </button>
                       <input
                         value={target.refId || ''}
                         onChange={(e) => updateTarget(ti, { refId: e.target.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 2) })}
@@ -947,6 +984,8 @@ export default function PanelEditPage({ panel, datasources, dashboardId, draftJs
                       )}
                     </div>
 
+                    {!isCollapsed && (
+                      <>
                     {isExpr ? (
                       <div style={{ padding: '12px', background: 'rgba(124,58,237,0.04)', borderRadius: '0 0 6px 6px' }}>
                         <div className="pe-field" style={{ marginBottom: 4 }}>
@@ -985,6 +1024,17 @@ export default function PanelEditPage({ panel, datasources, dashboardId, draftJs
                               placeholder="SELECT market, date, weekday FROM calendar LIMIT 100"
                               height="150px"
                               dialect="mysql"
+                              variables={[
+                                // 系统内置变量
+                                { name: '__from', label: '开始时间（ISO格式）' },
+                                { name: '__to', label: '结束时间（ISO格式）' },
+                                { name: '__fromUnix', label: '开始时间（Unix秒）' },
+                                { name: '__toUnix', label: '结束时间（Unix秒）' },
+                                { name: '__fromMs', label: '开始时间（毫秒）' },
+                                { name: '__toMs', label: '结束时间（毫秒）' },
+                                // 仪表板变量
+                                ...variables.map(v => ({ name: v.name, label: v.label || v.name })),
+                              ]}
                             />
                           )
                         } else if (selectedDs.type === 'http') {
@@ -1372,6 +1422,8 @@ export default function PanelEditPage({ panel, datasources, dashboardId, draftJs
                       />
                     </>
                   )}
+                      </>
+                    )}
                   </div>
                   )})}
 
